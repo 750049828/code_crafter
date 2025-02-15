@@ -5,6 +5,8 @@ import tempfile
 import json
 import re
 import zipfile
+import logging, logging.config
+from fastapi.logger import logger as fastapi_logger
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -28,6 +30,43 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+
+# gunicorn_error_logger = logging.getLogger("gunicorn.error")
+# gunicorn_logger = logging.getLogger("gunicorn")
+# uvicorn_access_logger = logging.getLogger("uvicorn.access")
+# uvicorn_access_logger.handlers = gunicorn_error_logger.handlers
+
+# fastapi_logger.handlers = gunicorn_error_logger.handlers
+# fastapi_logger.setLevel(gunicorn_logger.level)
+
+
+LOG_CONFIG = {
+    "version": 1,
+    "disable_existing_loggers": True,
+    "formatters": {"default": {"format": "%(asctime)s [%(process)s] %(levelname)s: %(message)s"}},
+    "handlers": {
+        "console": {
+            "formatter": "default",
+            "class": "logging.StreamHandler",
+            "stream": "ext://sys.stdout",
+            "level": "INFO",
+        }
+    },
+    "root": {"handlers": ["console"], "level": "INFO"},
+    "loggers": {
+        "gunicorn": {"propagate": True},
+        "gunicorn.access": {"propagate": True},
+        "gunicorn.error": {"propagate": True},
+        "uvicorn": {"propagate": True},
+        "uvicorn.access": {"propagate": True},
+        "uvicorn.error": {"propagate": True},
+    },
+}
+
+logging.config.dictConfig(LOG_CONFIG)
+logger = logging.getLogger(__name__)
+
 SUPPORTED_EXTENSIONS = {".py", ".sql"}
 
 prompt_mapping = {
@@ -36,6 +75,13 @@ prompt_mapping = {
     "any_to_text_explanation": ANY_CODE_TO_TEXT_EXPLANATION_SYSTEM_INSTRUCTION,
     "sql_to_aws_or_databricks": SQL_TO_AWS_OR_DATABRICKS_SYSTEM_INSTRUCTION
 }
+
+python_prompt_structure = """```python
+{0}
+```"""
+sql_prompt_structure = """```sql
+{0}
+```"""
 
 def clean_gemini_response(response_text):
     """Extract JSON from Gemini response, ensuring valid JSON output."""
@@ -61,8 +107,10 @@ def clone_repo(repo_url: str, temp_dir: str):
         repo_path = os.path.join(temp_dir, "repo")
         subprocess.run(["git", "clone", repo_url, repo_path], check=True)
     except Exception as e:
-        print(f"Exception Occured. Could not clone repo: {e}")
-    print(f"Cloned Repo at path: {repo_path}")
+        # gunicorn_logger.error(f"Exception Occured. Could not clone repo: {e}")
+        logger.error(f"Exception Occured. Could not clone repo: {e}")
+    # gunicorn_logger.info(f"Cloned Repo at path: {repo_path}")
+    logger.info(f"Cloned Repo at path: {repo_path}")
     return repo_path
 
 
@@ -108,12 +156,14 @@ def convert_code(source_format: str, target_format: str, code: str):
         system_instruction=[system_instruction]
     )
 
-    parts = [Part.from_text(code)]
+    prompt_structure = sql_prompt_structure if "sql" in source_format.lower() else python_prompt_structure
+    parts = [Part.from_text(prompt_structure.format(code))]
     content = [Content(role="user", parts=parts)]
 
     response: GenerationResponse = model.generate_content(contents=content)
     cleaned_response = clean_gemini_response(response.text)
-    #print(response.text)
+    logger.info(f"Response from Gemini model {response.text}")
+    # logger.info(f"Cleaned Response {cleaned_response}")
     return cleaned_response
 
 
@@ -150,6 +200,7 @@ def save_converted_code_to_zip(converted_files):
 
 @app.post("/convert")
 async def convert(
+    file_name: str = Form(""),
     repoPath1: str = Form(""),
     repoPath2: str = Form(""),
     repositoryType1: str =  Form(""),
@@ -160,7 +211,7 @@ async def convert(
     file: UploadFile = File(None)
 ):
     response_data = {}
-
+    logger.info(f"Received Request with parameters: file_name: {file_name}, repoPath1: {repoPath1}, repoPath2: {repoPath2}, repositoryType1: {repositoryType1}, repositoryType2: {repositoryType2},  source_format: {source_format}, target_format: {target_format}, source_code length: {len(source_code)}")
     with tempfile.TemporaryDirectory() as temp_dir:
         source_repo_path = clone_repo(repoPath1, temp_dir) if repoPath1 else None
         target_repo_path = clone_repo(repoPath2, temp_dir) if repoPath2 else None
@@ -172,7 +223,8 @@ async def convert(
             response_data.update({"total_files": total_files, "convertible_files": convertible_files})
 
             for file_name, content in file_contents.items():
-                print(f"Converting {file_name} from {source_format} to {target_format}")
+                # gunicorn_logger.info(f"Converting {file_name} from {source_format} to {target_format}")
+                logger.info(f"Converting {file_name} from {source_format} to {target_format}")
                 converted_code = convert_code(source_format, target_format, content)
                 try:
                     converted_code_json = clean_gemini_response(converted_code)
@@ -188,7 +240,8 @@ async def convert(
         elif file:
             file_name = file.filename
             original_code = await file.read()
-            print(f"Converting {file_name} from {source_format} to {target_format}")
+            # gunicorn_logger.info(f"Converting {file_name} from {source_format} to {target_format}")
+            logger.info(f"Converting {file_name} from {source_format} to {target_format}")
             converted_code = convert_code(source_format, target_format, original_code.decode("utf-8"))
 
             try:
@@ -204,7 +257,8 @@ async def convert(
              })
 
         elif source_code:
-            print(f"Converting pasted code from {source_format} to {target_format}")
+            # gunicorn_logger.info(f"Converting pasted code from {source_format} to {target_format}")
+            logger.info(f"Converting pasted code from {source_format} to {target_format}")
             converted_code = convert_code(source_format, target_format, source_code)
             try:
                 converted_code_json = clean_gemini_response(converted_code)
@@ -223,5 +277,6 @@ async def convert(
         if target_repo_path:
             save_converted_code_to_repo(target_repo_path, converted_files)
             response_data["message"] = f"Converted code saved to {repoPath2}"
-    print("Sending response back!")
+    # gunicorn_logger.info(f"Sending response back! {response_data}")
+    logger.info(f"Sending response back! {response_data}")
     return  response_data
