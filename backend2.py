@@ -8,7 +8,7 @@ import zipfile
 import logging, logging.config
 from fastapi.logger import logger as fastapi_logger
 from fastapi import FastAPI, UploadFile, File, Form
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse,FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional
 import vertexai
@@ -119,7 +119,10 @@ def analyze_and_extract_code_from_repo(repo_path: str):
     total_files, convertible_files = 0, 0
     file_contents = {}
 
-    for root, _, files in os.walk(repo_path):
+    for root, dirs, files in os.walk(repo_path):
+        dirs[:] = [d for d in dirs if not d.startswith('.')]
+        for dir in dirs:
+            print(os.path.join(root, dir))
         for file in files:
             total_files += 1
             if any(file.endswith(ext) for ext in SUPPORTED_EXTENSIONS):
@@ -183,19 +186,20 @@ def save_converted_code_to_repo(target_repo_path, converted_files):
 
 #added function to convert list of converted code into zip file. not yet integrated with rest of the code
 def save_converted_code_to_zip(converted_files):
-    """Saves converted repo as a zip of files and returns the zip file"""
-     # Create an in-memory bytes buffer
-    zip_buffer = io.BytesIO()
+    """Saves converted repo as a zip of files and returns the zip file path"""
+    zip_path = tempfile.NamedTemporaryFile(delete=False, suffix=".zip").name
+							   
 
-    # Create a zip archive in memory
-    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zipf:
+									  
+																		  
+															  
+																   
+
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
         for file_name, file_data in converted_files.items():
             zipf.writestr(file_name, file_data["converted_code"])
 
-    # Move the cursor to the beginning of the buffer
-    zip_buffer.seek(0)
-
-    return zip_buffer
+    return zip_path
 
 
 @app.post("/convert")
@@ -203,15 +207,18 @@ async def convert(
     file_name: str = Form(""),
     repoPath1: str = Form(""),
     repoPath2: str = Form(""),
-    repositoryType1: str =  Form(""),
+    repositoryType1: str = Form(""),
     repositoryType2: str = Form(""),
     source_format: str = Form(...),
     target_format: str = Form(...),
-    source_code: str = Form(None), #changed variable name to source_code from code
+    source_code: str = Form(None),
     file: UploadFile = File(None)
 ):
     response_data = {}
-    logger.info(f"Received Request with parameters: file_name: {file_name}, repoPath1: {repoPath1}, repoPath2: {repoPath2}, repositoryType1: {repositoryType1}, repositoryType2: {repositoryType2},  source_format: {source_format}, target_format: {target_format}, source_code length: {len(source_code)}")
+    zip_file_path = None  # Store zip file path if needed
+
+    logger.info(f"Received Request with parameters: file_name: {file_name}, source_format: {source_format}, target_format: {target_format}, source_code length:{len(source_code) if source_code else 0}")
+
     with tempfile.TemporaryDirectory() as temp_dir:
         source_repo_path = clone_repo(repoPath1, temp_dir) if repoPath1 else None
         target_repo_path = clone_repo(repoPath2, temp_dir) if repoPath2 else None
@@ -221,9 +228,10 @@ async def convert(
         if source_repo_path:
             total_files, convertible_files, file_contents = analyze_and_extract_code_from_repo(source_repo_path)
             response_data.update({"total_files": total_files, "convertible_files": convertible_files})
+            sum_confidence_score = 0
 
             for file_name, content in file_contents.items():
-                # gunicorn_logger.info(f"Converting {file_name} from {source_format} to {target_format}")
+																										 
                 logger.info(f"Converting {file_name} from {source_format} to {target_format}")
                 converted_code = convert_code(source_format, target_format, content)
                 try:
@@ -235,12 +243,18 @@ async def convert(
                     "converted_code": converted_code_json.get("converted_code", ""),
                     "confidence_score": converted_code_json.get("confidence_score", 0.0),
                 }
-            response_data["converted_files"] = converted_files 
+                sum_confidence_score += float(converted_code_json.get("confidence_score", 0.0))
+                
+            response_data["avg_confidence_score"] = sum_confidence_score / convertible_files
+
+            # Save converted code as a ZIP file and return its path
+            zip_file_path = save_converted_code_to_zip(converted_files)
+            response_data["zip_download_url"] = f"/download_zip?zip_path={zip_file_path}"
 
         elif file:
             file_name = file.filename
             original_code = await file.read()
-            # gunicorn_logger.info(f"Converting {file_name} from {source_format} to {target_format}")
+																									 
             logger.info(f"Converting {file_name} from {source_format} to {target_format}")
             converted_code = convert_code(source_format, target_format, original_code.decode("utf-8"))
 
@@ -250,14 +264,14 @@ async def convert(
                 return {"error": "Failed to parse response from Gemini API", "raw_response": converted_code}
 
             response_data.update({
-            "file_name": file_name,
-            "original_code": original_code.decode("utf-8"),
-            "converted_code": converted_code_json.get("converted_code", ""),
-            "confidence_score": converted_code_json.get("confidence_score", 0.0)
-             })
+                "file_name": file_name,
+                "original_code": original_code.decode("utf-8"),
+                "converted_code": converted_code_json.get("converted_code", ""),
+                "confidence_score": converted_code_json.get("confidence_score", 0.0)
+            })
 
         elif source_code:
-            # gunicorn_logger.info(f"Converting pasted code from {source_format} to {target_format}")
+																									 
             logger.info(f"Converting pasted code from {source_format} to {target_format}")
             converted_code = convert_code(source_format, target_format, source_code)
             try:
@@ -266,17 +280,26 @@ async def convert(
                 return {"error": "Failed to parse response from Gemini API", "raw_response": converted_code}
 
             response_data.update({
-            "original_code": source_code,
-            "converted_code": converted_code_json.get("converted_code", ""),
-            "confidence_score": converted_code_json.get("confidence_score", 0.0)
+                "original_code": source_code,
+                "converted_code": converted_code_json.get("converted_code", ""),
+                "confidence_score": converted_code_json.get("confidence_score", 0.0)
             })
-        
+
         else:
             return {"error": "No code, file, or repository provided"}
 
         if target_repo_path:
             save_converted_code_to_repo(target_repo_path, converted_files)
             response_data["message"] = f"Converted code saved to {repoPath2}"
-    # gunicorn_logger.info(f"Sending response back! {response_data}")
+
     logger.info(f"Sending response back! {response_data}")
-    return  response_data
+    return response_data
+
+
+@app.get("/download_zip")
+async def download_zip(zip_path: str):
+    """Endpoint to serve the converted zip file."""
+    if not os.path.exists(zip_path):
+        return {"error": "ZIP file not found"}
+
+    return FileResponse(zip_path, media_type="application/zip", filename="converted_code.zip")

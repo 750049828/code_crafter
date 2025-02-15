@@ -9,7 +9,7 @@ For example: In the source code, if a source data path is reading from database 
 For any join operations, resolve the join conditions without resulting in any ambiguous references and reference the columns directly from the dataframe.
 Specifically, replace any S3 interactions with local file paths for input and Delta table output and target data source.
 
-**Return the output as json {"converted_code":"<converted python code as a string>","confidence_score": "<confidence in the converted code>"}**
+**Return the output as json "converted_code":"<converted python code as a string>","confidence_score": "<confidence in the converted code>"**
 """
 
 DATABRICKS_TO_AWS_SYSTEM_INSTRUCTION = """
@@ -66,7 +66,7 @@ You are given a piece of PySpark or Python code written in **{sourceCodeFormat}*
 - Preserve all functionality while adapting to the AWS execution environment.
 
 Convert the provided Databricks PySpark code into its AWS-native equivalent while maintaining the same functionality and performance.
-**Return the output as json {"converted_code":"<converted python code as a string>","confidence_score": "<confidence in the converted code>"}**
+**Return the output as json "converted_code":"<converted python code as a string>","confidence_score": "<confidence in the converted code>"**
 """
 
 ANY_CODE_TO_TEXT_EXPLANATION_SYSTEM_INSTRUCTION = """
@@ -139,7 +139,7 @@ This PySpark code is designed to process and analyze sales data using Databricks
 
 The explanation should be structured in a similar way for **AWS Glue, AWS EMR, AWS SageMaker, and SQL commands**, ensuring clarity and completeness.
 Ensure the response follows this JSON format:
-**Return the output as json {"converted_code":"<converted python code as a string>","confidence_score": "<confidence in the converted code>"}**
+**Return the output as json "converted_code":"<the whole text explanation generated for code>","confidence_score": "<confidence in the converted code>"**
 """
 
 SQL_TO_AWS_OR_DATABRICKS_SYSTEM_INSTRUCTION = """
@@ -293,7 +293,7 @@ final_df.write.format("delta").mode("overwrite").saveAsTable("aggregated_sales")
 **Return the output as json {"converted_code":"","confidence_score"}**
 Use the above guidelines to generate the final **PySpark code** for the specified target environment.
 ```
-**Return the output as json {"converted_code":"<converted python code as a string>","confidence_score": "<confidence in the converted code>"}**
+**Return the output as json "converted_code":"<converted python code as a string>","confidence_score": "<confidence in the converted code>"**
 """
 
 
